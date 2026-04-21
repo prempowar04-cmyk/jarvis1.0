@@ -392,20 +392,7 @@ const BottomBar = ({ active, systemState, onStateChange }) => (
           ON
         </motion.button>
 
-        {/* SPEAK button — re-triggers speech when already ON */}
-        <motion.button onClick={() => { if (active) onStateChange('on'); else onStateChange('on'); }}
-          style={{ width:100, height:38, background: active ? 'rgba(0,255,157,0.12)' : 'rgba(0,0,0,0.5)',
-            border: `1px solid ${active?'#00ff9d88':'#00ff9d33'}`,
-            boxShadow: active ? '0 0 15px #00ff9d55' : 'none',
-            color: active ? '#00ff9daa' : '#ffffff33', fontFamily:'monospace', fontSize:11,
-            letterSpacing:'0.2em', fontWeight:'bold', cursor:'pointer', position:'relative', overflow:'hidden' }}
-          whileHover={{ scale:1.06 }} whileTap={{ scale:0.95 }}>
-          <div style={{ position:'absolute', top:0, left:0, width:8, height:8, borderTop:'1px solid #00ff9d', borderLeft:'1px solid #00ff9d' }}/>
-          <div style={{ position:'absolute', top:0, right:0, width:8, height:8, borderTop:'1px solid #00ff9d', borderRight:'1px solid #00ff9d' }}/>
-          <div style={{ position:'absolute', bottom:0, left:0, width:8, height:8, borderBottom:'1px solid #00ff9d', borderLeft:'1px solid #00ff9d' }}/>
-          <div style={{ position:'absolute', bottom:0, right:0, width:8, height:8, borderBottom:'1px solid #00ff9d', borderRight:'1px solid #00ff9d' }}/>
-          SPEAK
-        </motion.button>
+
       </div>
 
       {/* Right mini stats */}
@@ -474,7 +461,28 @@ const JarvisHUD = () => {
   const [burst, setBurst] = useState(false);
   const [avatarSpeaking, setAvatarSpeaking] = useState(false);
   const [speechText, setSpeechText] = useState('');
+  const [userTranscript, setUserTranscript] = useState('');
+  const [micLevel, setMicLevel] = useState(0.5);
   const active = systemState === 'on';
+
+  // Wake Word Effect
+  useEffect(() => {
+    if (!isListening && !avatarSpeaking && !isBooting && !isThinking) {
+      voiceEngine.startWakeWord(() => {
+        if (!active) {
+          handleStateChange('on'); // Automatically boot
+        }
+        setTimeout(() => {
+          setSpeechText("Hey Boss. How can I help you?");
+          setActiveVoiceText("Hey Boss. How can I help you?");
+          setIsGreeting(true); // Flags that we should auto-listen after speaking
+        }, !active ? 5200 : 200); // longer delay if we need to let boot finish
+      }, setMicLevel);
+    } else {
+      voiceEngine.stopWakeWord();
+    }
+    return () => voiceEngine.stopWakeWord();
+  }, [active, isListening, avatarSpeaking, isBooting, isThinking]);
 
   // Handle system ON/OFF with 5s boot
   const handleStateChange = (s) => {
@@ -525,7 +533,14 @@ const JarvisHUD = () => {
 
   const handleAIPrompt = async (prompt) => {
     setIsThinking(true);
-    const response = await getGeminiResponse(prompt);
+    let response;
+    try {
+      response = await getGeminiResponse(prompt);
+      console.log("[JARVIS AI Response]:", response);
+    } catch(err) {
+      console.error("[JARVIS AI Error]:", err);
+      response = "Sorry Boss, my neural path encountered an exception.";
+    }
     let cleanText = response;
 
     // Handle Metadata/Tool Markers
@@ -547,8 +562,11 @@ const JarvisHUD = () => {
       cleanText = cleanText.replace(/\[\[ACTION:.*?\]\]/g, '');
     }
 
+    cleanText = cleanText.trim();
     setIsThinking(false);
-    setActiveVoiceText(cleanText.trim());
+    setUserTranscript('');
+    setSpeechText(cleanText); // Force UI update here!
+    setActiveVoiceText(cleanText);
   };
 
   const executeAction = (type, payload) => {
@@ -590,24 +608,40 @@ const JarvisHUD = () => {
   const startListening = async () => {
     if (isListening || isThinking || avatarSpeaking) return;
     setIsListening(true);
+    setUserTranscript('LISTENING...');
+    setSpeechText(''); // Clear any previous AI text
     try {
-      const transcript = await voiceEngine.listen();
+      const transcript = await voiceEngine.listen((interim) => {
+        setUserTranscript(interim || 'LISTENING...');
+      });
+      setUserTranscript(transcript);
       handleAIPrompt(transcript);
     } catch (e) {
       console.warn("STT Error:", e);
+      setUserTranscript('MIC ERROR');
+      setTimeout(() => setUserTranscript(''), 2000);
     } finally {
       setIsListening(false);
     }
   };
 
   // Stable callbacks
-  const handleSpeechStart    = useCallback(() => setAvatarSpeaking(true),  []);
+  const handleSpeechStart    = useCallback(() => {
+    setAvatarSpeaking(true);
+    setUserTranscript('');
+  }, []);
   const handleSpeechEnd      = useCallback(() => {
     setAvatarSpeaking(false);
     setActiveVoiceText(''); // Clear to allow re-trigger
-    setIsGreeting(false);   // Greeting finished, can now enable Mic
-  }, []);
-  const handleSpeechTextChange = useCallback((t) => setSpeechText(t),      []);
+    if (isGreeting) {
+       setIsGreeting(false);
+       setTimeout(() => {
+         startListening(); // Automatically turn on mic after greeting finishes
+       }, 500); 
+    }
+  }, [isGreeting]);
+
+  const handleSpeechTextChange = useCallback((t) => setSpeechText(t), []);
 
   return (
     <div className="fixed inset-0 overflow-hidden select-none"
@@ -700,34 +734,47 @@ const JarvisHUD = () => {
             </AnimatePresence>
           </motion.div>
 
-          {/* Neural Mic UI — only show after initial greeting */}
+          {/* Neural Mic / Wake Word Status Indicator */}
           <AnimatePresence>
-            {active && !isBooting && !isGreeting && (
+            {(!isBooting) && (
               <motion.button
                 initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0, opacity: 0 }}
-                onClick={startListening}
+                onClick={!isListening ? startListening : undefined}
                 className="absolute z-50 flex items-center justify-center"
                 style={{ 
-                  bottom: '15%', right: '15%', width: 80, height: 80, 
+                  bottom: '2%', left: '50%', transform: 'translateX(-50%)', width: 80, height: 80, 
                   borderRadius: '50%', background: isListening ? '#ff2222' : 'rgba(0,255,157,0.15)',
                   border: `2px solid ${isListening ? '#ff2222' : '#00ff9d'}`,
-                  boxShadow: isListening ? '0 0 30px #ff2222' : '0 0 20px #00ff9d44',
+                  boxShadow: isListening 
+                              ? '0 0 30px #ff2222' 
+                              : (micLevel > 0.6 ? '0 0 25px #00ff9d' : '0 0 10px #00ff9d44'),
                   cursor: 'pointer'
                 }}
                 whileHover={{ scale: 1.1 }}
                 whileTap={{ scale: 0.9 }}
               >
-                <motion.div 
-                  animate={isListening ? { scale: [1, 1.4, 1] } : {}}
-                  transition={{ duration: 1, repeat: Infinity }}
-                >
-                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={isListening ? "white" : "#00ff9d"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                    <line x1="12" y1="19" x2="12" y2="23"/>
-                    <line x1="8" y1="23" x2="16" y2="23"/>
-                  </svg>
-                </motion.div>
+                {isListening ? (
+                  /* Audio Waves Animation */
+                  <div className="flex items-center justify-center gap-1 h-full w-full">
+                    {[1, 2, 3, 4].map((i) => (
+                      <motion.div
+                        key={i}
+                        animate={{ height: [`${30}%`, `${90}%`, `${30}%`] }}
+                        transition={{ duration: 0.4 + (i * 0.1), repeat: Infinity, ease: 'easeInOut' }}
+                        style={{ width: 4, background: '#ffffff', borderRadius: 4 }}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <motion.div animate={{ scale: [1, 1.05 + micLevel * 0.2, 1] }} transition={{ duration: 0.5, repeat: Infinity }}>
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#00ff9d" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                      <line x1="12" y1="19" x2="12" y2="23"/>
+                      <line x1="8" y1="23" x2="16" y2="23"/>
+                    </svg>
+                  </motion.div>
+                )}
               </motion.button>
             )}
           </AnimatePresence>
@@ -757,39 +804,50 @@ const JarvisHUD = () => {
             )}
           </AnimatePresence>
 
-          {/* ── Speech subtitle — below circle, OUTSIDE overflow clip ── */}
+          {/* ── Speech subtitle — Aside Panel ── */}
           <AnimatePresence mode="wait">
-            {speechText && (
+            {(speechText || userTranscript) && (
               <motion.div
-                key={speechText} 
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                transition={{ duration: 0.28 }}
+                key="captions-aside"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 20 }}
+                transition={{ duration: 0.4 }}
                 style={{
-                  position: 'absolute',
-                  bottom: '6%',
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  whiteSpace: 'nowrap',
-                  maxWidth: 560,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  color: '#00ff9d',
-                  fontFamily: 'Space Mono, monospace',
-                  fontSize: 12,
-                  letterSpacing: '0.16em',
-                  textAlign: 'center',
-                  textShadow: '0 0 10px #00ff9d, 0 0 22px #00ff9d88',
-                  padding: '5px 14px',
-                  border: '1px solid #00ff9d33',
-                  background: 'rgba(0,8,4,0.80)',
-                  backdropFilter: 'blur(10px)',
-                  zIndex: 50,
+                  position: 'fixed',
+                  top: '50%',
+                  right: '4%',
+                  transform: 'translateY(-50%)',
+                  width: '320px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                  zIndex: 100,
                   pointerEvents: 'none',
                 }}
               >
-                ▸ {speechText}
+                {userTranscript && (
+                  <div style={{
+                    padding: '12px 18px', background: 'rgba(0,40,60,0.85)', backdropFilter: 'blur(10px)',
+                    border: '1px solid #00e5ff33', borderLeft: '4px solid #00e5ff',
+                    color: '#00e5ff', fontFamily: 'Space Mono, monospace', fontSize: 13,
+                    boxShadow: '0 0 20px #00e5ff22', textTransform: 'uppercase'
+                  }}>
+                    <span style={{opacity:0.6, fontSize:10, display:'block', marginBottom:4}}>YOU:</span>
+                    {userTranscript}
+                  </div>
+                )}
+                {speechText && (
+                  <div style={{
+                    padding: '12px 18px', background: 'rgba(0,40,20,0.85)', backdropFilter: 'blur(10px)',
+                    border: '1px solid #00ff9d33', borderRight: '4px solid #00ff9d',
+                    color: '#00ff9d', fontFamily: 'Space Mono, monospace', fontSize: 13,
+                    boxShadow: '0 0 20px #00ff9d22', textTransform: 'uppercase', textAlign: 'right'
+                  }}>
+                    <span style={{opacity:0.6, fontSize:10, display:'block', marginBottom:4}}>PREMEX:</span>
+                    {speechText}
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

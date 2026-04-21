@@ -1,7 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(API_KEY);
+const getAPIKey = () => import.meta.env.VITE_GEMINI_API_KEY;
 
 /**
  * GeminiBrain
@@ -10,10 +9,13 @@ const genAI = new GoogleGenerativeAI(API_KEY);
  * Addresses user as "Boss" and provides short responses.
  */
 export const getGeminiResponse = async (userVoiceInput) => {
-  if (!API_KEY) return "Boss, I need the activation key to fully initialize my neural link.";
+  const key = getAPIKey();
+  if (!key) return "Boss, I need the activation key to fully initialize my neural link.";
+
+  const genAI = new GoogleGenerativeAI(key);
 
   // List of models to try in order of preference
-  const modelsToTry = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-pro"];
+  const modelsToTry = ["gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash"];
   let lastError = null;
 
   for (const modelId of modelsToTry) {
