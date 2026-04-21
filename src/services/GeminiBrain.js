@@ -31,12 +31,13 @@ export const getGeminiResponse = async (userVoiceInput) => {
         Constraint: Keep your response SHORT (max 2-3 sentences).
 
         TASK CAPABILITY:
-        If the user asks to open an app, send a message, or browse a website, include ONE marker at the VERY END:
+        If you need to execute an action based on the user's prompt, include exactly ONE marker at the VERY END of your response.
+        - [[ACTION: SYSTEM_CMD, CMD: "close_apps"]] (Use to close all extraneous running applications)
+        - [[ACTION: SET_ALARM, MINS: 10]] (Use to set an alarm for a specific number of minutes)
         - [[ACTION: OPEN_WHATSAPP, PHONE: "number", MESSAGE: "text"]]
         - [[ACTION: OPEN_APP, APP: "GMAIL|YOUTUBE|GITHUB|WHATSAPP"]]
         - [[ACTION: OPEN_URL, URL: "https://..."]]
         - [[ACTION: SEARCH, QUERY: "search term"]]
-        - [[ACTION: FILE_HANDLER, TASK: "ANALYZE|SAVE"]]
 
         Gender Switching: 
         - [[SET_VOICE: FEMALE]]

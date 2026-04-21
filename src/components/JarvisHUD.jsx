@@ -463,6 +463,7 @@ const JarvisHUD = () => {
   const [speechText, setSpeechText] = useState('');
   const [userTranscript, setUserTranscript] = useState('');
   const [micLevel, setMicLevel] = useState(0.5);
+  const [authPending, setAuthPending] = useState(null); // { cmd, payload } for system actions
   const active = systemState === 'on';
 
   // Wake Word Effect
@@ -573,28 +574,47 @@ const JarvisHUD = () => {
     setTaskStatus('executing');
     console.log(`[JARVIS] Executing: ${type} ${payload}`);
     
-    setTimeout(() => {
+    setTimeout(async () => {
       try {
-        if (type === 'OPEN_WHATSAPP') {
-          // Parse: PHONE: "...", MESSAGE: "..."
+        if (type === 'SYSTEM_CMD' || type === 'SET_ALARM') {
+           // These require PC access.
+           if (type === 'SYSTEM_CMD' && payload.includes('close_apps')) {
+               // Dangerous, ask for password override
+               setAuthPending({ cmd: 'CLOSE_APPS', payload, type });
+               setSpeechText("Boss, this is a destructive action. Voice or password override required.");
+               setActiveVoiceText("Boss, this is a destructive action. Voice or password override required.");
+               setIsGreeting(true);
+           } else {
+               // Safe system commands (like alarm) execute directly
+               setSpeechText("Accessing local system link...");
+               const req = await fetch('http://localhost:3001/api/sys/execute', {
+                   method: 'POST', headers: { 'Content-Type': 'application/json' },
+                   body: JSON.stringify({ command: type, payload: type === 'SET_ALARM' ? { mins: payload } : payload })
+               });
+               const res = await req.json();
+               if (res.success) {
+                   setSpeechText(res.message);
+                   setActiveVoiceText(res.message);
+               } else {
+                   setSpeechText("Failed to access system link.");
+                   setActiveVoiceText("Failed to access system link.");
+               }
+           }
+        } 
+        else if (type === 'OPEN_WHATSAPP') {
           const phone = payload.match(/PHONE:\s*["']?([^"']+)["']?/)?.[1] || "";
           const msg = payload.match(/MESSAGE:\s*["']?([^"']+)["']?/)?.[1] || "Hello from JARVIS";
-          window.open(`https://web.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(msg)}`, '_blank');
+          window.open(`https://web.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(msg)}`, 'jarvis_view');
         } else if (type === 'OPEN_APP') {
           const app = payload.match(/APP:\s*["']?([^"']+)["']?/)?.[1] || "";
-          const maps = {
-            'GMAIL': 'https://mail.google.com',
-            'YOUTUBE': 'https://youtube.com',
-            'GITHUB': 'https://github.com',
-            'WHATSAPP': 'https://web.whatsapp.com'
-          };
-          if (maps[app]) window.open(maps[app], '_blank');
+          const maps = { 'GMAIL': 'https://mail.google.com', 'YOUTUBE': 'https://youtube.com', 'GITHUB': 'https://github.com', 'WHATSAPP': 'https://web.whatsapp.com' };
+          if (maps[app]) window.open(maps[app], 'jarvis_view');
         } else if (type === 'OPEN_URL') {
           const url = payload.match(/URL:\s*["']?([^"']+)["']?/)?.[1] || "";
-          if (url) window.open(url.startsWith('http') ? url : `https://${url}`, '_blank');
+          if (url) window.open(url.startsWith('http') ? url : `https://${url}`, 'jarvis_view');
         } else if (type === 'SEARCH') {
           const query = payload.match(/QUERY:\s*["']?([^"']+)["']?/)?.[1] || "";
-          if (query) window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, '_blank');
+          if (query) window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}`, 'jarvis_view');
         }
         setTaskStatus('done');
       } catch (e) {
@@ -603,6 +623,26 @@ const JarvisHUD = () => {
       }
       setTimeout(() => setTaskStatus(null), 2000);
     }, 1200);
+  };
+
+  const verifyOverride = async () => {
+    if (!authPending) return;
+    setAuthPending(null);
+    setSpeechText("Override accepted. Executing system sequence...");
+    try {
+        const req = await fetch('http://localhost:3001/api/sys/execute', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: authPending.cmd, payload: authPending.payload })
+        });
+        const res = await req.json();
+        if (res.success) {
+            setSpeechText(res.message);
+            setActiveVoiceText(res.message);
+        }
+    } catch(e) {
+        setSpeechText("Server link failed.");
+        setActiveVoiceText("Server link failed.");
+    }
   };
 
   const startListening = async () => {
@@ -615,7 +655,12 @@ const JarvisHUD = () => {
         setUserTranscript(interim || 'LISTENING...');
       });
       setUserTranscript(transcript);
-      handleAIPrompt(transcript);
+      if (transcript.trim().length > 0) {
+        handleAIPrompt(transcript);
+      } else {
+        setSpeechText("I didn't catch that, Boss.");
+        setActiveVoiceText("I didn't catch that, Boss.");
+      }
     } catch (e) {
       console.warn("STT Error:", e);
       setUserTranscript('MIC ERROR');
@@ -848,6 +893,25 @@ const JarvisHUD = () => {
                     {speechText}
                   </div>
                 )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Auth Override Overlay */}
+          <AnimatePresence>
+            {authPending && (
+              <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}
+                className="absolute inset-0 flex items-center justify-center z-[100] bg-black bg-opacity-70 backdrop-blur-sm">
+                <div className="border border-red-500 bg-red-900 bg-opacity-30 p-8 rounded-lg text-center" style={{ boxShadow:'0 0 40px #ff2222' }}>
+                  <h2 className="text-red-500 text-2xl font-mono mb-4 tracking-widest">SECURITY OVERRIDE REQUIRED</h2>
+                  <p className="text-red-300 font-mono text-sm mb-6 max-w-sm mx-auto">
+                    Command '{authPending.cmd}' requires administrative bypass. Speak the passcode or enter it to authorize.
+                  </p>
+                  <div className="flex gap-4 justify-center">
+                    <button onClick={() => setAuthPending(null)} className="px-6 py-2 border border-red-500 text-red-500 font-mono hover:bg-red-500 hover:text-black transition">CANCEL</button>
+                    <button onClick={verifyOverride} className="px-6 py-2 bg-red-500 text-black font-mono hover:bg-red-400 transition shadow-[0_0_15px_#ff2222]">AUTHORIZE</button>
+                  </div>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
